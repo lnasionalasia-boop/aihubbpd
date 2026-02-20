@@ -1,0 +1,10 @@
+*.env
+*.ipynb
+*.pyc
+*.png
+*.jpg
+*.jpeg
+*.csv
+*.json
+*.pdf
+*.DS_Store
