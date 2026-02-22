@@ -1,9 +1,10 @@
 import os
+import json
 import asyncio
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import StreamingResponse
 from module import extraction
@@ -27,6 +28,7 @@ thread_executors = ThreadPoolExecutor(max_workers=int(os.getenv("THREAD_NUMBERS"
 
 @app.post("/extract-data")
 async def extract_data(file_bytes: UploadFile = File(...),
+                       additional_data: str = Form(...),
                        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())):
     """
     Function as an API endpoint to response the user's chat from front-end
@@ -40,10 +42,13 @@ async def extract_data(file_bytes: UploadFile = File(...),
 
     try:
         file_bytes = await file_bytes.read()
+        additional_data_json = json.loads(additional_data)
+
         buffer_output = await async_loop.run_in_executor(
             thread_executors,
             extraction,
-            file_bytes
+            file_bytes,
+            additional_data_json
         )
 
         return StreamingResponse(

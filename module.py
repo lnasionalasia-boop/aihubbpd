@@ -2,7 +2,12 @@ import os
 import io
 import psycopg2
 import openpyxl
+import warnings
+import shutil
+import zipfile
+import subprocess
 from google import genai
+from datetime import datetime
 from google.genai import types
 
 
@@ -65,18 +70,35 @@ def postgresql_connect():
     return database_client
 
 
-def update_data_to_sheet(update_data):
-    """
-    Write the extracted data to worksheet loaded by openpyxl (to keep the format the same like the
-    original format)
-    """
-    print("Start updating worksheet !")
-    # Define worksheet
-    output_file_on_memory = io.BytesIO()
+def zip_file(user_temporary_dir):
+    list_files = [file for file in os.listdir(user_temporary_dir) if ".xlsx" in file or ".pdf" in file]
+
+    zip_file_path = f"{user_temporary_dir}/Extraction_Result.zip"
+
+    with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for filename in list_files:
+            zip_file.write(f"{user_temporary_dir}/{filename}", arcname=filename)
+
+    # Delete existing xlsx and pdf files
+    for filename in list_files:
+        os.remove(f"{user_temporary_dir}/{filename}")
+
+    # Move zip to memory
+    with open(zip_file_path, "rb") as openfile:
+        zip_memory = io.BytesIO(openfile.read())
+
+    print("Successfully zipping file !")
+
+    return zip_memory
+
+
+def write_xlsx_and_pdf(update_data,
+                       user_temporary_dir,
+                       additional_data):
+    warnings.filterwarnings("ignore")
+    # xlsx processing
     worksheet = openpyxl.load_workbook(os.getenv("TEMPLATE_DOCUMENT_FILE_PATH"))
     sheet = worksheet.active
-
-    # Replace values in cells
     for data in update_data:
         cell_code = data["cell_code"]
         cell_start = int(data["cell_start_idx"])
@@ -86,12 +108,56 @@ def update_data_to_sheet(update_data):
             sheet[current_cell_name] = val
 
             current_cell_idx += 1
+    sheet["C5"] = str(additional_data["name"])
+    sheet["C6"] = str(additional_data["position"])
+    sheet["C7"] = str(additional_data["unit"])
 
-    # Save in the memory
-    worksheet.save(output_file_on_memory)
-    output_file_on_memory.seek(0)
+    sheet.page_setup.orientation = sheet.ORIENTATION_LANDSCAPE
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = False
+    sheet.print_area = None
 
-    return output_file_on_memory
+    worksheet.save(f"{user_temporary_dir}/extraction_result.xlsx")
+    print("Successfully writing data to excel file !")
+
+    # pdf processing
+    SOFFICE_PATH = "/opt/homebrew/bin/soffice"
+    command = [
+        "soffice",
+        "--headless",
+        "--convert-to", "pdf",
+        f"{user_temporary_dir}/extraction_result.xlsx",
+        "--outdir", user_temporary_dir
+    ]
+
+    subprocess.run(command, check=True)
+    print("Successfully writing data to pdf file !")
+    
+
+
+def update_data_to_sheet(update_data,
+                         additional_data):
+    """
+    Write the extracted data to worksheet loaded by openpyxl (to keep the format the same like the
+    original format)
+    """
+    # Create user temporary dir
+    unique_identifier = datetime.now().strftime("%f")
+    dir_name = f"extraction_result_{unique_identifier}"
+    os.mkdir(dir_name)
+
+    write_xlsx_and_pdf(
+        update_data,
+        dir_name,
+        additional_data
+    )
+
+    zip_memory = zip_file(dir_name)
+
+    # Delete current working dir
+    shutil.rmtree(dir_name)
+
+    return zip_memory
 
 
 def debitur_information(response_llm):
@@ -124,7 +190,7 @@ def debitur_information(response_llm):
     list_values = [
         {
             "cell_code": "C",
-            "cell_start_idx": 11,
+            "cell_start_idx": 16,
             "data": [
                 debitur_name,
                 business_group,
@@ -177,7 +243,7 @@ def administration_information(response_llm):
     list_values = [
         {
             "cell_code": "C",
-            "cell_start_idx": 25,
+            "cell_start_idx": 30,
             "data": [
                 ktp_debitur_status,
                 "-",
@@ -192,7 +258,7 @@ def administration_information(response_llm):
         },
         {
             "cell_code": "D",
-            "cell_start_idx": 25,
+            "cell_start_idx": 30,
             "data": [
                 ktp_debitur_information,
                 ktp_administrator_information,
@@ -211,7 +277,8 @@ def administration_information(response_llm):
 
 
 
-def extraction(file_bytes):
+def extraction(file_bytes,
+               additional_data):
     print("Start extracting data")
     # Define the google genai client
     genai_client = genai.Client(api_key=os.getenv("GOOGLE_CLOUD_API_KEY"))
@@ -242,7 +309,7 @@ def extraction(file_bytes):
     update_data += list_values_debitur_information + list_values_adm_information
 
     # Update data to spreadsheet
-    output_file_on_memory = update_data_to_sheet(update_data)
+    zip_memory = update_data_to_sheet(update_data, additional_data)
 
 
-    return output_file_on_memory
+    return zip_memory
